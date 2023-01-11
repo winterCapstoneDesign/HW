@@ -14,6 +14,7 @@
 #define ROW_NUM     4 // four rows
 #define COLUMN_NUM  3 // three columns
 #define RELAY_PIN 25
+#define LED_PIN 27
 
 String secretCode;  // 비밀번호를 설정(여기선 1234)
 int position = 0; 
@@ -44,6 +45,11 @@ byte pin_column[COLUMN_NUM] = {17, 16, 4};  // GIOP4, GIOP0, GIOP2 connect to th
 Keypad keypad = Keypad( makeKeymap(keys), pin_rows, pin_column, ROW_NUM, COLUMN_NUM );
 
 String otp_bool=""; //앱에서 올바른 otp 값이 입력되었는가 판별
+String check_qr="";
+String input_password="";
+int f = 0;
+String enter_num="";
+
 
 void setup()
 {
@@ -73,6 +79,7 @@ void setup()
   Firebase.setDoubleDigits(5);
 
   pinMode(RELAY_PIN, OUTPUT);
+  pinMode(LED_PIN, OUTPUT);
 }
 
 void loop()
@@ -81,39 +88,51 @@ void loop()
     if(Firebase.getString(fbdo,"/real_password")) {
         secretCode = fbdo.stringData();
      }
+    if(Firebase.getString(fbdo,"/input_password")){
+      input_password = fbdo.stringData();
+    }
+    if(Firebase.getString(fbdo,"/check_qr")){
+      check_qr = fbdo.stringData();
+    }
   }
-  
+
   char key = keypad.getKey();
-  if (key){   //도어락 키패드에 비밀번호 입력이 들어왔을 때
-    if(!timeClient.update()) { //현재 시간 가져오기 위해 필요한 코드
-      timeClient.forceUpdate();
-    }
+  if (key == '#'){   //도어락 키패드에 비밀번호 입력이 들어왔을 때
+    Serial.print("key : ");
     Serial.println(key);
-    Serial.print("secret");
-    Serial.println(secretCode[position]);
-    if (key == secretCode[position]){
-      position++;
-      wrong = 0;
+    while(1){
+      key = keypad.getKey();
+      if (key){
+        f = f + 1;
+        enter_num.concat(key);
+        Serial.print("key : ");
+        Serial.println(key);
+        continue;
+      }
+      if (f == 4){
+        f = 0;
+        Serial.println(enter_num);
+        break;
+      }
     }
 
-    else if (key != secretCode[position]){
-      Serial.println(secretCode[position]);
-      position = 0; // 비밀번호를 맞았을 경우를 0으로 만듬
-      wrong++; // 비밀번호 오류 값을 늘려준다
-      Serial.println("wrong!!");
-      digitalWrite(RELAY_PIN, LOW);  // lock the door
-    }
-
-    if (position == 4){
+    if (enter_num == secretCode){
       digitalWrite(RELAY_PIN, HIGH); // unlock the door
+      digitalWrite(LED_PIN, HIGH);
       if (Firebase.ready()){
+        if(!timeClient.update()) { //현재 시간 가져오기 위해 필요한 코드
+         timeClient.forceUpdate();
+        }
         String count_str = String(count);
         count = count + 1;
         formattedDate = timeClient.getFormattedDate(); //현재 날짜, 시간 가져옴
         Firebase.set(fbdo, "/lock_log/" + count_str,formattedDate); //현재 시간 파이어베이스로 전송
       }
+      delay(2000);
+      digitalWrite(RELAY_PIN, LOW); //도어락 잠금 해제
+      digitalWrite(LED_PIN, LOW);
     }
-    if(wrong == 5){ //비밀번호 5회 이상 틀린 경우 키패드 비활성화
+    else if(enter_num != "" && enter_num != secretCode){ //비밀번호 5회 이상 틀린 경우 키패드 비활성화
       Serial.println(wrong);
       while(1){
         key = '*';
@@ -123,9 +142,10 @@ void loop()
             otp_bool = fbdo.stringData();
             if (otp_bool == "true"){
                 wrong = 0;
+                Firebase.set(fbdo, "/check_otp", "false");
                 break;
             } else {
-              Serial.println("No otp");
+              Serial.println("false otp");
             }
           }
         }
@@ -133,33 +153,36 @@ void loop()
     }
   }//key
 
-  if(Firebase.ready()){ //라즈베리파이에서 qr 인식 판별이 완료된 후 도어락 잠금 해제 요청이 들어온 경우
-    if(Firebase.getString(fbdo,"/check_qr")) {
-        String check_qr = fbdo.stringData();
-        if(check_qr == "true") {
-          digitalWrite(RELAY_PIN, HIGH); //도어락 잠금 해제
-          String count_str = String(count);
-          count = count + 1;
-          formattedDate = timeClient.getFormattedDate(); //현재 날짜, 시간 가져옴
-          Firebase.set(fbdo, "/lock_log/" + count_str,formattedDate); //현재 시간 파이어베이스로 전송 
-          Firebase.set(fbdo, "/check_qr", "false"); 
-        }
-     }
-  }
+   //라즈베리파이에서 qr 인식 판별이 완료된 후 도어락 잠금 해제 요청이 들어온 경우
+  if(check_qr == "true") {
+    if(!timeClient.update()) { //현재 시간 가져오기 위해 필요한 코드
+         timeClient.forceUpdate();
+    }
+    digitalWrite(RELAY_PIN, HIGH); //도어락 잠금 해제
+    digitalWrite(LED_PIN, HIGH);
+    String count_str = String(count);
+    count = count + 1;
+    formattedDate = timeClient.getFormattedDate(); //현재 날짜, 시간 가져옴
+    Firebase.set(fbdo, "/lock_log/" + count_str,formattedDate); //현재 시간 파이어베이스로 전송 
+    Firebase.set(fbdo, "/check_qr", "false");
+    delay(2000);
+    digitalWrite(RELAY_PIN, LOW); //도어락 잠금 해제
+    digitalWrite(LED_PIN, LOW);
+   }  
 
-  if(Firebase.ready()){ //스마트폰 앱에서 입력한 비밀번호 값 가져오기
-    if(Firebase.getString(fbdo,"/input_password")) {
-        String input_password = fbdo.stringData();
-        if(input_password == secretCode) {
-          digitalWrite(RELAY_PIN, HIGH); //도어락 잠금 해제
-          String count_str = String(count);
-          count = count + 1;
-          formattedDate = timeClient.getFormattedDate(); //현재 날짜, 시간 가져옴
-          Firebase.set(fbdo, "/lock_log/" + count_str,formattedDate); //현재 시간 파이어베이스로 전송 
-          Firebase.set(fbdo, "/input_password", "0000"); //무한 루프 제한
-        } else {
-//          Serial.println("비밀번호를 다시 입력하세요!");
-        }
-     }
-  }
-}//loop
+   if(input_password == secretCode) {
+    if(!timeClient.update()) { //현재 시간 가져오기 위해 필요한 코드
+         timeClient.forceUpdate();
+    }
+    digitalWrite(RELAY_PIN, HIGH); //도어락 잠금 해제
+    digitalWrite(LED_PIN, HIGH);
+    String count_str = String(count);
+    count = count + 1;
+    formattedDate = timeClient.getFormattedDate(); //현재 날짜, 시간 가져옴
+    Firebase.set(fbdo, "/lock_log/" + count_str,formattedDate); //현재 시간 파이어베이스로 전송 
+    Firebase.set(fbdo, "/input_password", "0000"); //무한 루프 제한
+    delay(2000);
+    digitalWrite(RELAY_PIN, LOW); //도어락 잠금 해제
+    digitalWrite(LED_PIN, LOW);
+   }    
+} //loop
